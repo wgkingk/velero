@@ -206,6 +206,7 @@ func checkBackupPhase(ctx context.Context, veleroCLI string, veleroNamespace str
 		backupName)
 
 	fmt.Printf("get backup cmd =%v\n", checkCMD)
+	KubectlGetInfo("date", []string{"-u"})
 	jsonBuf, err := CMDExecWithOutput(checkCMD)
 	if err != nil {
 		return err
@@ -215,19 +216,20 @@ func checkBackupPhase(ctx context.Context, veleroCLI string, veleroNamespace str
 	if err != nil {
 		return err
 	}
+	KubectlGetInfo("date", []string{"-u"})
 	if backup.Status.Phase != expectedPhase {
 		return errors.Errorf("Unexpected backup phase got %s, expecting %s", backup.Status.Phase, expectedPhase)
 	}
 	return nil
 }
 
-// checkRestorePhase uses VeleroCLI to inspect the phase of a Velero restore.
 func checkRestorePhase(ctx context.Context, veleroCLI string, veleroNamespace string, restoreName string,
 	expectedPhase velerov1api.RestorePhase) error {
 	checkCMD := exec.CommandContext(ctx, veleroCLI, "--namespace", veleroNamespace, "restore", "get", "-o", "json",
 		restoreName)
 
 	fmt.Printf("get restore cmd =%v\n", checkCMD)
+	KubectlGetInfo("date", []string{"-u"})
 	jsonBuf, err := CMDExecWithOutput(checkCMD)
 	if err != nil {
 		return err
@@ -236,6 +238,15 @@ func checkRestorePhase(ctx context.Context, veleroCLI string, veleroNamespace st
 	err = json.Unmarshal(*jsonBuf, &restore)
 	if err != nil {
 		return err
+	}
+	if restore.Status.Phase == velerov1api.RestorePhaseFailed {
+		time.Sleep(2 * time.Minute)
+		arg := []string{"get", "events", "-o", "custom-columns=FirstSeen:.firstTimestamp,Count:.count,From:.source.component,Type:.type,Reason:.reason,Message:.message", "--all-namespaces"}
+		KubectlGetInfo("kubectl", arg)
+		arg = []string{"get", "events", "-o", "yaml", "--all-namespaces"}
+		KubectlGetInfo("kubectl", arg)
+		KubectlGetInfo("date", []string{"-u"})
+		//time.Sleep(100000000 * time.Minute)
 	}
 	if restore.Status.Phase != expectedPhase {
 		return errors.Errorf("Unexpected restore phase got %s, expecting %s", restore.Status.Phase, expectedPhase)
@@ -420,18 +431,64 @@ func VeleroRestore(ctx context.Context, veleroCLI, veleroNamespace, restoreName,
 }
 
 func VeleroRestoreExec(ctx context.Context, veleroCLI, veleroNamespace, restoreName string, args []string, phaseExpect velerov1api.RestorePhase) error {
+
+	pods, err := GetVeleroPodName(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(pods) != 1 {
+		return errors.New(fmt.Sprintf("Only 1 pod should be found under namespace "))
+	}
+
+	quitCh := make(chan struct{})
+	go func() {
+		for i := 0; i < 20; i++ {
+			time.Sleep(2 * time.Second)
+			select {
+			case <-quitCh:
+				return
+			default:
+			}
+			KubectlGetPodLog(ctx, pods[0])
+		}
+	}()
+
 	if err := VeleroCmdExec(ctx, veleroCLI, args); err != nil {
 		return err
 	}
-
-	return checkRestorePhase(ctx, veleroCLI, veleroNamespace, restoreName, phaseExpect)
+	err = checkRestorePhase(ctx, veleroCLI, veleroNamespace, restoreName, phaseExpect)
+	close(quitCh)
+	return err
 }
 
 func VeleroBackupExec(ctx context.Context, veleroCLI string, veleroNamespace string, backupName string, args []string) error {
+	pods, err := GetVeleroPodName(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(pods) != 1 {
+		return errors.New(fmt.Sprintf("Only 1 pod should be found under namespace "))
+	}
+
+	quitCh := make(chan struct{})
+	go func() {
+		for i := 0; i < 20; i++ {
+			time.Sleep(2 * time.Second)
+			select {
+			case <-quitCh:
+				return
+			default:
+			}
+			KubectlGetPodLog(ctx, pods[0])
+		}
+	}()
+
 	if err := VeleroCmdExec(ctx, veleroCLI, args); err != nil {
 		return err
 	}
-	return checkBackupPhase(ctx, veleroCLI, veleroNamespace, backupName, velerov1api.BackupPhaseCompleted)
+	err = checkBackupPhase(ctx, veleroCLI, veleroNamespace, backupName, velerov1api.BackupPhaseCompleted)
+	close(quitCh)
+	return err
 }
 
 func VeleroBackupDelete(ctx context.Context, veleroCLI string, veleroNamespace string, backupName string) error {
