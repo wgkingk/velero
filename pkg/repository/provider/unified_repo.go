@@ -66,7 +66,7 @@ const (
 	repoOpDescMaintain = "repo maintenance"
 	repoOpDescForget   = "forget"
 
-	repoConnectDesc = "unfied repo"
+	repoConnectDesc = "unified repo"
 )
 
 // NewUnifiedRepoProvider creates the service provider for Unified Repo
@@ -301,6 +301,11 @@ func (urp *unifiedRepoProvider) Forget(ctx context.Context, snapshotID string, p
 		return errors.Wrap(err, "error to delete manifest")
 	}
 
+	err = bkRepo.Flush(ctx)
+	if err != nil {
+		return errors.Wrap(err, "error to flush repo")
+	}
+
 	log.Debug("Forget snapshot complete")
 
 	return nil
@@ -472,9 +477,11 @@ func getStorageVariables(backupLocation *velerov1api.BackupStorageLocation, repo
 
 		var err error
 		if s3Url == "" {
-			region, err = getS3BucketRegion(bucket)
-			if err != nil {
-				return map[string]string{}, errors.Wrap(err, "error get s3 bucket region")
+			if region == "" {
+				region, err = getS3BucketRegion(bucket)
+				if err != nil {
+					return map[string]string{}, errors.Wrap(err, "error get s3 bucket region")
+				}
 			}
 
 			s3Url = fmt.Sprintf("s3-%s.amazonaws.com", region)

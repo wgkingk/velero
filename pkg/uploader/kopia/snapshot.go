@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,6 +18,7 @@ package kopia
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"math"
 	"os"
@@ -43,14 +44,14 @@ import (
 	"github.com/pkg/errors"
 )
 
-//All function mainly used to make testing more convenient
+// All function mainly used to make testing more convenient
 var treeForSourceFunc = policy.TreeForSource
 var applyRetentionPolicyFunc = policy.ApplyRetentionPolicy
 var setPolicyFunc = policy.SetPolicy
 var saveSnapshotFunc = snapshot.SaveSnapshot
 var loadSnapshotFunc = snapshot.LoadSnapshot
 
-//SnapshotUploader which mainly used for UT test that could overwrite Upload interface
+// SnapshotUploader which mainly used for UT test that could overwrite Upload interface
 type SnapshotUploader interface {
 	Upload(
 		ctx context.Context,
@@ -61,11 +62,17 @@ type SnapshotUploader interface {
 	) (*snapshot.Manifest, error)
 }
 
-func newOptionalInt(b policy.OptionalInt) *policy.OptionalInt {
-	return &b
+func newOptionalInt(b int) *policy.OptionalInt {
+	ob := policy.OptionalInt(b)
+	return &ob
 }
 
-//setupDefaultPolicy set default policy for kopia
+func newOptionalBool(b bool) *policy.OptionalBool {
+	ob := policy.OptionalBool(b)
+	return &ob
+}
+
+// setupDefaultPolicy set default policy for kopia
 func setupDefaultPolicy(ctx context.Context, rep repo.RepositoryWriter, sourceInfo snapshot.SourceInfo) error {
 	return setPolicyFunc(ctx, rep, sourceInfo, &policy.Policy{
 		RetentionPolicy: policy.RetentionPolicy{
@@ -75,15 +82,18 @@ func setupDefaultPolicy(ctx context.Context, rep repo.RepositoryWriter, sourceIn
 			CompressorName: "none",
 		},
 		UploadPolicy: policy.UploadPolicy{
-			MaxParallelFileReads: newOptionalInt(policy.OptionalInt(runtime.NumCPU())),
+			MaxParallelFileReads: newOptionalInt(runtime.NumCPU()),
 		},
 		SchedulingPolicy: policy.SchedulingPolicy{
 			Manual: true,
 		},
+		ErrorHandlingPolicy: policy.ErrorHandlingPolicy{
+			IgnoreUnknownTypes: newOptionalBool(true),
+		},
 	})
 }
 
-//Backup backup specific sourcePath and update progress
+// Backup backup specific sourcePath and update progress
 func Backup(ctx context.Context, fsUploader *snapshotfs.Uploader, repoWriter repo.RepositoryWriter, sourcePath string,
 	parentSnapshot string, log logrus.FieldLogger) (*uploader.SnapshotInfo, bool, error) {
 	if fsUploader == nil {
@@ -140,7 +150,7 @@ func getLocalFSEntry(path0 string) (fs.Entry, error) {
 	return e, nil
 }
 
-//resolveSymlink returns the path name after the evaluation of any symbolic links
+// resolveSymlink returns the path name after the evaluation of any symbolic links
 func resolveSymlink(path string) (string, error) {
 	st, err := os.Lstat(path)
 	if err != nil {
@@ -154,7 +164,7 @@ func resolveSymlink(path string) (string, error) {
 	return filepath.EvalSymlinks(path)
 }
 
-//SnapshotSource which setup policy for snapshot, upload snapshot, update progress
+// SnapshotSource which setup policy for snapshot, upload snapshot, update progress
 func SnapshotSource(
 	ctx context.Context,
 	rep repo.RepositoryWriter,
@@ -189,6 +199,10 @@ func SnapshotSource(
 		return "", 0, errors.Wrapf(err, "unable to set policy for si %v", sourceInfo)
 	}
 
+	if err := rep.Flush(ctx); err != nil {
+		return "", 0, errors.Wrap(err, "error to flush policy repo")
+	}
+
 	policyTree, err := treeForSourceFunc(ctx, rep, sourceInfo)
 	if err != nil {
 		return "", 0, errors.Wrapf(err, "unable to create policy getter for si %v", sourceInfo)
@@ -212,19 +226,23 @@ func SnapshotSource(
 		return "", 0, errors.Wrapf(err, "Failed to flush kopia repository")
 	}
 	log.Infof("Created snapshot with root %v and ID %v in %v", manifest.RootObjectID(), manifest.ID, time.Since(snapshotStartTime).Truncate(time.Second))
-	return reportSnapshotStatus(manifest)
+	return reportSnapshotStatus(manifest, policyTree)
 }
 
-func reportSnapshotStatus(manifest *snapshot.Manifest) (string, int64, error) {
+func reportSnapshotStatus(manifest *snapshot.Manifest, policyTree *policy.Tree) (string, int64, error) {
 	manifestID := manifest.ID
 	snapSize := manifest.Stats.TotalFileSize
 
 	var errs []string
 	if ds := manifest.RootEntry.DirSummary; ds != nil {
 		for _, ent := range ds.FailedEntries {
-			errs = append(errs, ent.Error)
+			policy := policyTree.EffectivePolicy()
+			if !(policy != nil && *policy.ErrorHandlingPolicy.IgnoreUnknownTypes == true && strings.Contains(ent.Error, fs.ErrUnknown.Error())) {
+				errs = append(errs, fmt.Sprintf("Error when processing %v: %v", ent.EntryPath, ent.Error))
+			}
 		}
 	}
+
 	if len(errs) != 0 {
 		return "", 0, errors.New(strings.Join(errs, "\n"))
 	}
@@ -260,7 +278,7 @@ func findPreviousSnapshotManifest(ctx context.Context, rep repo.Repository, sour
 	return result, nil
 }
 
-//Restore restore specific sourcePath with given snapshotID and update progress
+// Restore restore specific sourcePath with given snapshotID and update progress
 func Restore(ctx context.Context, rep repo.RepositoryWriter, progress *KopiaProgress, snapshotID, dest string, log logrus.FieldLogger, cancleCh chan struct{}) (int64, int32, error) {
 	log.Info("Start to restore...")
 

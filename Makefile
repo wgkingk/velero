@@ -22,9 +22,11 @@ PKG := github.com/vmware-tanzu/velero
 
 # Where to push the docker image.
 REGISTRY ?= velero
+GCR_REGISTRY ?= gcr.io/velero-gcp
 
 # Image name
 IMAGE ?= $(REGISTRY)/$(BIN)
+GCR_IMAGE ?= $(GCR_REGISTRY)/$(BIN)
 
 # We allow the Dockerfile to be configurable to enable the use of custom Dockerfiles
 # that pull base images from different registries.
@@ -66,8 +68,10 @@ TAG_LATEST ?= false
 
 ifeq ($(TAG_LATEST), true)
 	IMAGE_TAGS ?= $(IMAGE):$(VERSION) $(IMAGE):latest
+	GCR_IMAGE_TAGS ?= $(GCR_IMAGE):$(VERSION) $(GCR_IMAGE):latest
 else
 	IMAGE_TAGS ?= $(IMAGE):$(VERSION)
+	GCR_IMAGE_TAGS ?= $(GCR_IMAGE):$(VERSION)
 endif
 
 ifeq ($(shell docker buildx inspect 2>/dev/null | awk '/Status/ { print $$2 }'), running)
@@ -82,7 +86,7 @@ see: https://velero.io/docs/main/build-from-source/#making-images-and-updating-v
 endef
 
 # The version of restic binary to be downloaded
-RESTIC_VERSION ?= 0.14.0
+RESTIC_VERSION ?= 0.15.0
 
 CLI_PLATFORMS ?= linux-amd64 linux-arm linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 linux-ppc64le
 BUILDX_PLATFORMS ?= $(subst -,/,$(ARCH))
@@ -186,6 +190,7 @@ endif
 	--output=type=$(BUILDX_OUTPUT_TYPE) \
 	--platform $(BUILDX_PLATFORMS) \
 	$(addprefix -t , $(IMAGE_TAGS)) \
+	$(addprefix -t , $(GCR_IMAGE_TAGS)) \
 	--build-arg=GOPROXY=$(GOPROXY) \
 	--build-arg=PKG=$(PKG) \
 	--build-arg=BIN=$(BIN) \

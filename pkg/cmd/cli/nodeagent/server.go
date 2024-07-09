@@ -132,6 +132,12 @@ func newNodeAgentServer(logger logrus.FieldLogger, factory client.Factory, metri
 			&v1.Pod{}: {
 				Field: fields.Set{"spec.nodeName": nodeName}.AsSelector(),
 			},
+			&velerov1api.PodVolumeBackup{}: {
+				Field: fields.Set{"metadata.namespace": factory.Namespace()}.AsSelector(),
+			},
+			&velerov1api.PodVolumeRestore{}: {
+				Field: fields.Set{"metadata.namespace": factory.Namespace()}.AsSelector(),
+			},
 		},
 	}
 	mgr, err := ctrl.NewManager(clientConfig, ctrl.Options{
@@ -173,7 +179,12 @@ func (s *nodeAgentServer) run() {
 		metricsMux := http.NewServeMux()
 		metricsMux.Handle("/metrics", promhttp.Handler())
 		s.logger.Infof("Starting metric server for node agent at address [%s]", s.metricsAddress)
-		if err := http.ListenAndServe(s.metricsAddress, metricsMux); err != nil {
+		server := &http.Server{
+			Addr:              s.metricsAddress,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 3 * time.Second,
+		}
+		if err := server.ListenAndServe(); err != nil {
 			s.logger.Fatalf("Failed to start metric server for node agent at [%s]: %v", s.metricsAddress, err)
 		}
 	}()
@@ -303,11 +314,10 @@ func (s *nodeAgentServer) markInProgressPVBsFailed(client ctrlclient.Client) {
 			s.logger.Debugf("the node of podvolumebackup %q is %q, not %q, skip", pvb.GetName(), pvb.Spec.Node, s.nodeName)
 			continue
 		}
-		original := pvb.DeepCopy()
-		pvb.Status.Phase = velerov1api.PodVolumeBackupPhaseFailed
-		pvb.Status.Message = fmt.Sprintf("get a podvolumebackup with status %q during the server starting, mark it as %q", velerov1api.PodVolumeBackupPhaseInProgress, pvb.Status.Phase)
-		pvb.Status.CompletionTimestamp = &metav1.Time{Time: time.Now()}
-		if err := client.Patch(s.ctx, &pvbs.Items[i], ctrlclient.MergeFrom(original)); err != nil {
+
+		if err := controller.UpdatePVBStatusToFailed(client, s.ctx, &pvbs.Items[i],
+			fmt.Sprintf("get a podvolumebackup with status %q during the server starting, mark it as %q", velerov1api.PodVolumeBackupPhaseInProgress, velerov1api.PodVolumeBackupPhaseFailed),
+			time.Now()); err != nil {
 			s.logger.WithError(errors.WithStack(err)).Errorf("failed to patch podvolumebackup %q", pvb.GetName())
 			continue
 		}
@@ -341,11 +351,9 @@ func (s *nodeAgentServer) markInProgressPVRsFailed(client ctrlclient.Client) {
 			continue
 		}
 
-		original := pvr.DeepCopy()
-		pvr.Status.Phase = velerov1api.PodVolumeRestorePhaseFailed
-		pvr.Status.Message = fmt.Sprintf("get a podvolumerestore with status %q during the server starting, mark it as %q", velerov1api.PodVolumeRestorePhaseInProgress, pvr.Status.Phase)
-		pvr.Status.CompletionTimestamp = &metav1.Time{Time: time.Now()}
-		if err := client.Patch(s.ctx, &pvrs.Items[i], ctrlclient.MergeFrom(original)); err != nil {
+		if err := controller.UpdatePVRStatusToFailed(client, s.ctx, &pvrs.Items[i],
+			fmt.Sprintf("get a podvolumerestore with status %q during the server starting, mark it as %q", velerov1api.PodVolumeRestorePhaseInProgress, velerov1api.PodVolumeRestorePhaseFailed),
+			time.Now()); err != nil {
 			s.logger.WithError(errors.WithStack(err)).Errorf("failed to patch podvolumerestore %q", pvr.GetName())
 			continue
 		}

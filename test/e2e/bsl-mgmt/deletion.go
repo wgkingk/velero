@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -164,7 +164,7 @@ func BslDeletionTest(useVolumeSnapshots bool) {
 				Expect(AddLabelToPod(context.Background(), "kibishii-deployment-1", bslDeletionTestNs, label_2)).To(Succeed())
 			})
 
-			By("Get all 2 PVCs of Kibishii and label them seprately ", func() {
+			By("Get all 2 PVCs of Kibishii and label them separately ", func() {
 				pvc, err := GetPvcByPodName(context.Background(), bslDeletionTestNs, podName_1)
 				Expect(err).To(Succeed())
 				fmt.Println(pvc)

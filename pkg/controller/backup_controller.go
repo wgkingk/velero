@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -42,6 +42,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/vmware-tanzu/velero/pkg/util/results"
 
 	"github.com/vmware-tanzu/velero/pkg/util/csi"
 
@@ -479,11 +481,12 @@ func (c *backupController) prepareBackupRequest(backup *velerov1api.Backup, logg
 
 // validateAndGetSnapshotLocations gets a collection of VolumeSnapshotLocation objects that
 // this backup will use (returned as a map of provider name -> VSL), and ensures:
-// - each location name in .spec.volumeSnapshotLocations exists as a location
-// - exactly 1 location per provider
-// - a given provider's default location name is added to .spec.volumeSnapshotLocations if one
-//   is not explicitly specified for the provider (if there's only one location for the provider,
-//   it will automatically be used)
+//   - each location name in .spec.volumeSnapshotLocations exists as a location
+//   - exactly 1 location per provider
+//   - a given provider's default location name is added to .spec.volumeSnapshotLocations if one
+//     is not explicitly specified for the provider (if there's only one location for the provider,
+//     it will automatically be used)
+//
 // if backup has snapshotVolume disabled then it returns empty VSL
 func (c *backupController) validateAndGetSnapshotLocations(backup *velerov1api.Backup) (map[string]*velerov1api.VolumeSnapshotLocation, []string) {
 	errors := []string{}
@@ -523,7 +526,7 @@ func (c *backupController) validateAndGetSnapshotLocations(backup *velerov1api.B
 		return nil, errors
 	}
 
-	allLocations, err := c.snapshotLocationLister.VolumeSnapshotLocations(backup.Namespace).List(labels.Everything())
+	volumeSnapshotLocations, err := c.snapshotLocationLister.VolumeSnapshotLocations(backup.Namespace).List(labels.Everything())
 	if err != nil {
 		errors = append(errors, fmt.Sprintf("error listing volume snapshot locations: %v", err))
 		return nil, errors
@@ -531,8 +534,8 @@ func (c *backupController) validateAndGetSnapshotLocations(backup *velerov1api.B
 
 	// build a map of provider->list of all locations for the provider
 	allProviderLocations := make(map[string][]*velerov1api.VolumeSnapshotLocation)
-	for i := range allLocations {
-		loc := allLocations[i]
+	for i := range volumeSnapshotLocations {
+		loc := volumeSnapshotLocations[i]
 		allProviderLocations[loc.Spec.Provider] = append(allProviderLocations[loc.Spec.Provider], loc)
 	}
 
@@ -603,7 +606,7 @@ func (c *backupController) runBackup(backup *pkgbackup.Request) error {
 	logger := logging.DefaultLogger(c.backupLogLevel, c.formatFlag)
 	logger.Out = io.MultiWriter(os.Stdout, gzippedLogFile)
 
-	logCounter := logging.NewLogCounterHook()
+	logCounter := logging.NewLogHook()
 	logger.Hooks.Add(logCounter)
 
 	backupLog := logger.WithField(Backup, kubeutil.NamespaceAndName(backup))
@@ -725,6 +728,13 @@ func (c *backupController) runBackup(backup *pkgbackup.Request) error {
 
 	recordBackupMetrics(backupLog, backup.Backup, backupFile, c.metrics)
 
+	backupWarnings := logCounter.GetEntries(logrus.WarnLevel)
+	backupErrors := logCounter.GetEntries(logrus.ErrorLevel)
+	results := map[string]results.Result{
+		"warnings": backupWarnings,
+		"errors":   backupErrors,
+	}
+
 	if err := gzippedLogFile.Close(); err != nil {
 		c.logger.WithField(Backup, kubeutil.NamespaceAndName(backup)).WithError(err).Error("error closing gzippedLogFile")
 	}
@@ -750,7 +760,7 @@ func (c *backupController) runBackup(backup *pkgbackup.Request) error {
 		return err
 	}
 
-	if errs := persistBackup(backup, backupFile, logFile, backupStore, volumeSnapshots, volumeSnapshotContents, volumeSnapshotClasses); len(errs) > 0 {
+	if errs := persistBackup(backup, backupFile, logFile, backupStore, volumeSnapshots, volumeSnapshotContents, volumeSnapshotClasses, results); len(errs) > 0 {
 		fatalErrs = append(fatalErrs, errs...)
 	}
 
@@ -797,6 +807,7 @@ func persistBackup(backup *pkgbackup.Request,
 	csiVolumeSnapshots []snapshotv1api.VolumeSnapshot,
 	csiVolumeSnapshotContents []snapshotv1api.VolumeSnapshotContent,
 	csiVolumesnapshotClasses []snapshotv1api.VolumeSnapshotClass,
+	results map[string]results.Result,
 ) []error {
 	persistErrs := []error{}
 	backupJSON := new(bytes.Buffer)
@@ -835,6 +846,11 @@ func persistBackup(backup *pkgbackup.Request,
 		persistErrs = append(persistErrs, errs...)
 	}
 
+	backupResult, errs := encodeToJSONGzip(results, "backup results")
+	if errs != nil {
+		persistErrs = append(persistErrs, errs...)
+	}
+
 	if len(persistErrs) > 0 {
 		// Don't upload the JSON files or backup tarball if encoding to json fails.
 		backupJSON = nil
@@ -844,6 +860,7 @@ func persistBackup(backup *pkgbackup.Request,
 		csiSnapshotJSON = nil
 		csiSnapshotContentsJSON = nil
 		csiSnapshotClassesJSON = nil
+		backupResult = nil
 	}
 
 	backupInfo := persistence.BackupInfo{
@@ -851,6 +868,7 @@ func persistBackup(backup *pkgbackup.Request,
 		Metadata:                  backupJSON,
 		Contents:                  backupContents,
 		Log:                       backupLog,
+		BackupResults:             backupResult,
 		PodVolumeBackups:          podVolumeBackups,
 		VolumeSnapshots:           nativeVolumeSnapshots,
 		BackupResourceList:        backupResourceList,
